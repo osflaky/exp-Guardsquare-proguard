@@ -1,0 +1,114 @@
+name: Continuous Integration
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+        - os: macos-latest
+          java: 11
+          arch: arm64
+          runner: macos-latest
+          expander_leg: macos-latest-11-arm64
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: Setup Java for Android SDK tools
+        # The ubuntu-24.04-arm and windows-11-arm images have no Android SDK, but the gradle-plugin
+        # tests build Android projects. The Android cmdline-tools (sdkmanager) need Java 17 or newer,
+        # so they cannot run on the Java 11 leg. Install the SDK with Java 17 first. The matrix JDK
+        # is set up after this.
+      if: runner.arch == 'ARM64' && runner.os != 'macOS'
+      uses: actions/setup-java@v4
+      with:
+        distribution: ${{ runner.os == 'Windows' && 'microsoft' || 'temurin' }}
+        java-version: 17
+    - name: Setup Android SDK
+      if: runner.arch == 'ARM64' && runner.os != 'macOS'
+      uses: android-actions/setup-android@v3
+      with:
+        packages: 'platform-tools platforms;android-29 platforms;android-30 build-tools;30.0.2
+          build-tools;30.0.3'
+    - name: Enable x86_64 emulation for Android build tools
+        # Google ships aapt2 and build-tools only as x86_64 binaries for Linux, so they need
+        # qemu user-mode emulation and amd64 runtime libraries to run on arm64.
+      if: runner.os == 'Linux' && runner.arch == 'ARM64'
+      run: |
+        sudo dpkg --add-architecture amd64
+        if [ -f /etc/apt/sources.list.d/ubuntu.sources ]; then
+          sudo sed -i '/^Architectures:/d; s/^Types: deb$/Types: deb\nArchitectures: arm64/' /etc/apt/sources.list.d/ubuntu.sources
+        fi
+        if [ -f /etc/apt/sources.list ]; then
+          sudo sed -i -E 's/^deb (http[^ ]*ports\.ubuntu\.com)/deb [arch=arm64] \1/' /etc/apt/sources.list
+        fi
+        printf 'Types: deb\nURIs: http://archive.ubuntu.com/ubuntu\nSuites: noble noble-updates noble-security\nComponents: main universe\nArchitectures: amd64\n' | sudo tee /etc/apt/sources.list.d/amd64.sources
+        sudo apt-get update
+        sudo apt-get install -y qemu-user-static binfmt-support libc6:amd64 libstdc++6:amd64 zlib1g:amd64
+        sudo update-binfmts --enable qemu-x86_64 || true
+    - name: Setup x64 JDKs for Java toolchains on Windows arm64
+        # :base:testAllJavaVersions runs the tests on many Java versions through Gradle toolchains.
+        # Most of these versions (for example Java 12) were never built for Windows aarch64, so
+        # Gradle cannot provision them. Windows 11 on arm64 runs x64 binaries through emulation, so
+        # install x64 JDKs here and register them with Gradle in a later step.
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      uses: actions/setup-java@v4
+      with:
+        distribution: "zulu"
+        architecture: x64
+        java-version: |
+          8
+          11
+          12
+          13
+          14
+          15
+          16
+          17
+          18
+          19
+          20
+          21
+          22
+          23
+          24
+          25
+    - name: Setup Java
+        # Temurin publishes no Windows aarch64 build of Java 11, so setup-java cannot resolve '11'
+        # on windows-11-arm. Use the Temurin x64 build of Java 11 there instead; Windows 11 on arm64
+        # runs it through emulation, so the build and the Gradle TestKit builds started by the
+        # gradle-plugin tests run on the same JDK as the passing windows-latest x64 leg.
+        # An empty architecture keeps the setup-java default (the runner architecture).
+      uses: actions/setup-java@v4
+      with:
+        distribution: "temurin"
+        java-version: ${{ matrix.java }}
+        architecture: ${{ (runner.os == 'Windows' && runner.arch == 'ARM64' && 
+          matrix.java == 11) && 'x64' || '' }}
+    - name: Setup gradle
+      uses: gradle/actions/setup-gradle@017a9effdb900e5b5b2fddfb590a105619dca3c3   # version 4.4.2
+    - name: Register x64 JDKs as Gradle toolchains on Windows arm64
+        # setup-java exports JAVA_HOME_<version>_X64 for each x64 JDK installed above. Let Gradle's
+        # toolchain detection pick them up so the per-version test tasks find a matching JDK.
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      shell: pwsh
+      run: |
+        $gradleHome = if ($env:GRADLE_USER_HOME) { $env:GRADLE_USER_HOME } else { Join-Path $HOME '.gradle' }
+        New-Item -ItemType Directory -Force $gradleHome | Out-Null
+        $vars = ((@(8) + (11..25)) | ForEach-Object { "JAVA_HOME_$($_)_X64" }) -join ','
+        Add-Content -Path (Join-Path $gradleHome 'gradle.properties') -Value "`norg.gradle.java.installations.fromEnv=$vars"
+    - name: Test
+      run: ./gradlew test :base:testAllJavaVersions :base:jacocoTestReport jar 
+        --info
+    - name: Publish Test Report
+      uses: 
+        mikepenz/action-junit-report@3585e9575db828022551b4231f165eb59a0e74e3       # version 5.6.2
+      if: success() || failure()   # always run even if the previous step fails
+      with:
+        report_paths: '**/build/test-results/test/TEST-*.xml'
+    name: build [${{ matrix.expander_leg }}]
+    timeout-minutes: 150
