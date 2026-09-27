@@ -1,0 +1,96 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
+plugins {
+    id 'java-library'
+    id 'maven-publish'
+    id "org.jetbrains.kotlin.jvm"
+    id 'com.adarshr.test-logger' version '4.0.0'
+    id 'jacoco'
+    id "org.jlleitschuh.gradle.ktlint" version '12.1.2'
+}
+
+repositories {
+    mavenCentral()
+}
+
+
+dependencies {
+    api(libs.proguard.core)
+    implementation(libs.gson)
+    implementation(libs.bundles.log4j)
+    implementation(libs.json)
+    testImplementation(libs.kotlin.reflect)
+    testImplementation(libs.kotlin.stdlib)
+    testImplementation(libs.kotlin.compile.testing)
+    testImplementation(libs.bundles.kotest)
+    testImplementation(libs.mockk) // for mocking
+    testImplementation(testFixtures(libs.proguard.core)) {
+        exclude group: 'com.guardsquare', module: 'proguard-core'
+    }
+}
+
+jar {
+    manifest {
+        attributes(
+                'Multi-Release': true,
+                'Implementation-Version': archiveVersion.get())
+    }
+}
+
+// Early access automatic downloads are not yet supported:
+// https://github.com/gradle/gradle/issues/14814
+// But it will work if e.g. Java N-ea is pre-installed
+def javaVersionsForTest = 12..25
+
+test {
+    useJUnitPlatform()
+}
+
+def testAllJavaVersion = tasks.register("testAllJavaVersions"){ testAllTask ->
+    dependsOn(test) // the usual test runs on Java 11
+}
+
+javaVersionsForTest.each {version ->
+    def testJavaVersion = tasks.register("testJava$version", Test) {
+        useJUnitPlatform()
+        ignoreFailures = true
+
+        // The version of bytebuddy used by mockk only supports Java 22 experimentally so far
+        // if (version >= 22) systemProperty 'net.bytebuddy.experimental', true
+
+
+        javaLauncher = javaToolchains.launcherFor {
+            languageVersion = JavaLanguageVersion.of(version)
+        }
+    }
+    testAllJavaVersion.configure { it.dependsOn(testJavaVersion) }
+
+}
+
+jacocoTestReport {
+    // Define which classes need to be monitored
+    def sources = files(project.sourceSets.main.allSource.srcDirs)
+    sourceDirectories.setFrom(sources)
+    additionalSourceDirs.setFrom(sources)
+    sourceDirectories.setFrom(sources)
+    def classes = files(project.sourceSets.main.output.classesDirs)
+    classDirectories.setFrom(classes)
+    executionData.setFrom project.fileTree(dir: '.', include: '**/build/jacoco/*.exec')
+    reports {
+        xml.required = true
+        csv.required = false
+    }
+    javaVersionsForTest.each { version ->
+        mustRunAfter "testJava$version"
+    }
+}
+
+afterEvaluate {
+    publishing {
+        publications.named(project.name) {
+            pom {
+                description = 'ProGuard is a free shrinker, optimizer, obfuscator, and preverifier for Java bytecode'
+            }
+        }
+    }
+}

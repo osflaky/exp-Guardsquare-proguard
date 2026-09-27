@@ -1,0 +1,25 @@
+pluginManagement {
+    resolutionStrategy {
+        eachPlugin {
+            if (requested.id.id == 'io.github.gradle-nexus.publish-plugin') {
+                useVersion '2.0.0'
+            }
+        }
+    }
+}
+
+plugins {
+    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'
+}
+
+rootProject.name = 'proguard'
+
+include 'base'
+include 'proguard-app'
+include 'retrace'
+include 'gui'
+include 'gradle-plugin'
+include 'ant'
+include 'annotations'
+
+project(':gradle-plugin').name = 'gradle'

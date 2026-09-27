@@ -1,0 +1,121 @@
+import com.github.jengelman.gradle.plugins.shadow.tasks.ShadowJar
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+plugins {
+    id 'com.gradleup.shadow'
+    id 'java-gradle-plugin'
+    id 'org.jetbrains.kotlin.jvm'
+    id 'maven-publish'
+    id 'org.jlleitschuh.gradle.ktlint' version '12.1.2'
+}
+
+repositories {
+    google()
+    mavenCentral()
+}
+
+
+gradlePlugin {
+    plugins {
+        proguardPlugin {
+            id = 'com.guardsquare.proguard'
+            implementationClass = 'proguard.gradle.plugin.ProGuardPlugin'
+        }
+    }
+}
+
+configurations {
+    fatJar.extendsFrom(compile)
+}
+
+dependencies {
+    api project(':base')
+    // TODO update to 4.2 or 7.0 API
+    compileOnly (libs.android.gradle) {
+        exclude module: 'proguard-gradle'
+        exclude module: 'proguard-base'
+    }
+    implementation(libs.java.semver)
+    testCompileOnly (libs.android.gradle) {
+        exclude module: 'proguard-gradle'
+        exclude module: 'proguard-base'
+    }
+    testImplementation(libs.bundles.kotest)
+    testImplementation(libs.mockk)
+    testImplementation(libs.commons.io)
+    fatJar project(":base")
+    // This library is used to parse the android gradle plugin version at runtime.
+    fatJar(libs.java.semver)
+}
+
+test {
+    useJUnitPlatform()
+}
+
+def localRepo = file("$buildDir/local-repo")
+
+def shadowJar = tasks.named('shadowJar', ShadowJar) {
+    destinationDirectory.set(localRepo)
+    archiveFileName.set("proguard-gradle-${version}.jar")
+    configurations = provider { [project.configurations.fatJar] }
+    manifest {
+        attributes(
+                'Main-Class': 'proguard.ProGuard',
+                'Implementation-Version': archiveVersion.get(),
+        )
+    }
+}
+
+tasks.withType(Test).configureEach {
+    dependsOn shadowJar
+    systemProperty "local.repo", localRepo.toURI()
+    systemProperty "proguard.version", version
+    systemProperty "agp.version", libs.versions.agp.get()
+}
+
+sourceSets.test {
+    resources {
+        srcDirs += "$buildDir/fixtures"
+    }
+}
+
+// Copies selected directories from examples into the test resources to compile during an integration test.
+def copyExamples = tasks.register('copyExamples', Copy) {
+    from("$rootProject.rootDir/examples") {
+        include 'spring-boot/**'
+        include 'gradle-kotlin-dsl/**'
+        include 'application/**'
+    }
+    into "$buildDir/fixtures"
+}
+
+tasks.named('processTestResources', ProcessResources) {
+    dependsOn copyExamples
+}
+
+tasks.withType(Test).configureEach {
+    dependsOn copyExamples
+}
+
+afterEvaluate {
+    /*  This project gets two publications:
+        - "pluginMaven" is the default from `java-gradle-plugin`
+          and must not be automatically published.
+        - "<project.name>" is created by ProGuard custom logic
+          and should have its artifact ID adjusted.
+        - we also disable publishing of plugin markers.
+     */
+    tasks.withType(AbstractPublishToMaven).matching { task ->
+        task.publication.name == 'pluginMaven' ||
+            task.name =~ /^publish(.*)PluginMarkerMavenPublicationTo(GithubRepository|MavenLocal|SonatypeRepository)$/
+    } each {task ->
+        task.enabled = false
+    }
+
+    publishing {
+        publications.getByName(project.name) {
+            pom {
+                description = 'Gradle plugin for ProGuard, the free shrinker, optimizer, obfuscator, and preverifier for Java bytecode'
+            }
+        }
+    }
+}

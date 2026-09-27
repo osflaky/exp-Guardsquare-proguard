@@ -1,0 +1,10 @@
+.gradle
+.hg/**
+.hgtags
+.idea
+build
+local.properties
+/lib/
+docs/html
+.kotlin
+.DS_Store
